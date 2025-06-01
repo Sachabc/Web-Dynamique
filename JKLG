@@ -1,0 +1,440 @@
+#include <Wire.h>
+#include "SparkFunLSM6DS3.h" // Assurez-vous que cette bibliothèque est installée
+
+// Broches
+#define LEDU1 25
+#define LEDU2 26
+#define EN_D 23
+#define EN_G 4
+#define IN_1_D 19
+#define IN_2_D 18
+#define IN_1_G 17
+#define IN_2_G 16
+#define ENC_G_CH_A 32
+#define ENC_G_CH_B 33
+#define ENC_D_CH_A 27
+#define ENC_D_CH_B 14
+#define ADDR_IMU 0x6B // Adresse I2C LSM6DS3
+
+  float compensationGauche = 1.0;
+  float compensationDroite = 1.0;
+
+// IMU
+LSM6DS3 imu(I2C_MODE, ADDR_IMU);
+float biaisGyroZ = 0.0;
+
+
+  float angleCible = 0.0;
+  float angleActuel = 0.0;
+  float erreurAngle = 0.0;
+// Encodeurs
+volatile long ticksGauche = 0;
+volatile long ticksDroit = 0;
+const float TICKS_PAR_CM = 139;
+
+// PID Distance
+float distanceCibleCm = 30.0; // Cible: 30 cm
+long  distanceCibleTicks = 0;
+long  positionActuelleTicks = 0;
+float erreurDistance = 0, integralDistance = 0, erreurPrecedenteDistance = 0;
+
+
+// ========== CONSTANTES PID DISTANCE ========== 
+
+
+// ========== CONSTANTES PID ANGLE ==========
+const float KP_angle = 5.0;      // Gain proportionnel
+const float KI_angle = 0.1;      // Gain intégral
+const float KD_angle = 0.5;      // Gain dérivé
+
+// PID Angle (Maintien de cap)
+float angleCibleDeg = 0.0; // Maintenir le cap initial
+float angleActuelDeg = 0.0;
+
+float integralAngle = 0;
+float erreurPrecedenteAngle = 0;
+const float KP_ANGLE = 2.0;  // À RÉGLER
+const float KI_ANGLE = 0.05; // À RÉGLER
+const float KD_ANGLE = 1.0;  // À RÉGLER
+
+// Timing PID
+unsigned long dernierTempsPID = 0;
+const unsigned long PERIODE_PID_MS = 10; // Exécuter les PID toutes les 10ms (100Hz)
+
+// Limites de puissance moteur
+const int MAX_POWER = 255;
+const int MIN_POWER_START = 50; // Puissance minimale pour que les moteurs démarrent
+
+// Tables de transition pour décodeur en quadrature 2 bits
+const int8_t QEM [16] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
+volatile uint8_t encGauche_last = 0;
+volatile uint8_t encDroit_last = 0;
+ unsigned long dernierTemps = 0;
+
+void IRAM_ATTR isrEncGA() {
+  uint8_t encGauche_now = (digitalRead(ENC_G_CH_A) << 1) | digitalRead(ENC_G_CH_B);
+  ticksGauche += QEM[encGauche_last << 2 | encGauche_now];
+  encGauche_last = encGauche_now;
+}
+void IRAM_ATTR isrEncGB() {
+  uint8_t encGauche_now = (digitalRead(ENC_G_CH_A) << 1) | digitalRead(ENC_G_CH_B);
+  ticksGauche += QEM[encGauche_last << 2 | encGauche_now];
+  encGauche_last = encGauche_now;
+}
+void IRAM_ATTR isrEncDA() {
+  uint8_t encDroit_now = (digitalRead(ENC_D_CH_A) << 1) | digitalRead(ENC_D_CH_B);
+  ticksDroit += QEM[encDroit_last << 2 | encDroit_now]; // Ajuster le signe si nécessaire
+  encDroit_last = encDroit_now;
+}
+void IRAM_ATTR isrEncDB() {
+  uint8_t encDroit_now = (digitalRead(ENC_D_CH_A) << 1) | digitalRead(ENC_D_CH_B);
+  ticksDroit += QEM[encDroit_last << 2 | encDroit_now]; // Ajuster le signe si nécessaire
+  encDroit_last = encDroit_now;
+}
+
+
+
+long getTicksGauche() {
+  long ticks;
+  noInterrupts(); // Désactiver les interruptions temporairement pour une lecture sûre
+  ticks = ticksGauche;
+  interrupts();   // Réactiver les interruptions
+  return ticks;
+}
+
+long getTicksDroit() {
+  long ticks;
+  noInterrupts();
+  ticks = ticksDroit;
+  interrupts();
+  return ticks;
+}
+
+
+void resetTicks() {
+  noInterrupts();
+  ticksGauche = 0;
+  ticksDroit = 0;
+  // Important de aussi réinitialiser l'état précédent si on reset les ticks
+  // pour éviter un "saut" au prochain tick si l'état a changé pendant que les ticks étaient à zéro.
+
+  interrupts();
+  Serial.println("Compteurs de ticks réinitialisés.");
+}
+
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(); // Pour l'IMU sur ESP32, SDA et SCL sont généralement 21 et 22
+
+  pinMode(LEDU1, OUTPUT);
+  pinMode(LEDU2, OUTPUT);
+  digitalWrite(LEDU1, LOW);
+  digitalWrite(LEDU2, LOW);
+
+  // Configuration Moteurs
+  pinMode(EN_D, OUTPUT);
+  pinMode(EN_G, OUTPUT);
+  digitalWrite(EN_D, HIGH);
+  digitalWrite(EN_G, HIGH);
+
+  // Les broches IN_x_x sont déjà en OUTPUT par défaut pour ledcAttach
+  // mais on peut le laisser par clarté.
+  pinMode(IN_1_D, OUTPUT); pinMode(IN_2_D, OUTPUT);
+  pinMode(IN_1_G, OUTPUT); pinMode(IN_2_G, OUTPUT);
+
+  // PWM Moteurs avec ledcAttach (fréq 1000Hz, résolution 8-bit)
+  ledcAttach(IN_1_D, 1000, 8);
+  ledcAttach(IN_2_D, 1000, 8);
+  ledcAttach(IN_1_G, 1000, 8);
+  ledcAttach(IN_2_G, 1000, 8);
+
+  // Configuration Encodeurs
+  pinMode(ENC_G_CH_A, INPUT_PULLUP); pinMode(ENC_G_CH_B, INPUT_PULLUP);
+  pinMode(ENC_D_CH_A, INPUT_PULLUP); pinMode(ENC_D_CH_B, INPUT_PULLUP);
+
+  encGauche_last = (digitalRead(ENC_G_CH_A) << 1) | digitalRead(ENC_G_CH_B);
+  encDroit_last = (digitalRead(ENC_D_CH_A) << 1) | digitalRead(ENC_D_CH_B);
+
+  attachInterrupt(digitalPinToInterrupt(ENC_G_CH_A), isrEncGA, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_G_CH_B), isrEncGB, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_D_CH_A), isrEncDA, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_D_CH_B), isrEncDB, CHANGE);
+
+  if (imu.begin() != 0) {
+    Serial.println("Erreur initialisation IMU!");
+    while (1) { digitalWrite(LEDU1, !digitalRead(LEDU1)); delay(100); }
+  }
+
+  float sum = 0;
+  for (int i = 0; i < 500; i++) {
+    sum += imu.readFloatGyroZ();
+    delay(5);
+  }
+  biaisGyroZ = imu.readFloatGyroZ();
+
+  resetTicks();
+}
+
+
+/*void setMotorPower(int sD, int sG) {
+ledcWrite(IN_1_D, sD);
+ledcWrite(IN_2_D, sD);
+ledcWrite(IN_1_G, sG);
+ledcWrite(IN_2_G, sG);
+
+}*/
+// PID Distance
+float Kp = 1.0;   // Gain proportionnel (à régler empiriquement)
+float Ki = 0.01;  // Gain intégral
+float Kd = 0.05;  // Gain dérivé
+float erreurPrecedente = 0;
+float integral = 0;
+
+void MotorStop(int temps) {
+    ledcWrite(IN_1_D, 0);
+    ledcWrite(IN_2_D, 0);
+    ledcWrite(IN_1_G, 0);
+    ledcWrite(IN_2_G, 0);
+    delay(temps);
+}
+
+void setMotors(int powerD, int powerG) {
+    // Gestion de l'inversion des moteurs :
+    // - powerD > 0 : Avance (IN_2_D=HIGH, IN_1_D=LOW)
+    // - powerD < 0 : Recule (IN_1_D=HIGH, IN_2_D=LOW)
+    // Idem pour powerG
+    
+    // Moteur Droit
+    if(powerD > 0) {
+        ledcWrite(IN_1_D, 0);
+        ledcWrite(IN_2_D, abs(powerD));
+    } else {
+        ledcWrite(IN_1_D, abs(powerD));
+        ledcWrite(IN_2_D, 0);
+    }
+    
+    // Moteur Gauche
+    if(powerG > 0) {
+        ledcWrite(IN_1_G, abs(powerG));
+        ledcWrite(IN_2_G, 0);
+    } else {
+        ledcWrite(IN_1_G, 0);
+        ledcWrite(IN_2_G, abs(powerG));
+    }
+}
+
+
+  void avancer(int vitesse) {
+    // Application des compensations
+    int vitesseG = vitesse * compensationGauche;
+    int vitesseD = vitesse * compensationDroite;
+    
+
+    
+    ledcWrite(IN_1_D, 0);
+    ledcWrite(IN_1_G, vitesseG);
+    ledcWrite(IN_2_D, vitesseD);
+    ledcWrite(IN_2_G, 0);
+
+
+  }
+
+    void avancerG(int v1, int v2) {
+
+    ledcWrite(IN_1_G, v1);
+    ledcWrite(IN_2_G, v2);
+  }
+
+    void avancerD(int v1, int v2) {
+
+    ledcWrite(IN_1_D, v1);
+    ledcWrite(IN_2_D, v2);
+  }
+
+  void avancerSurDistance(float distance_cm, int vitesse) {
+    long ticksCible = distance_cm ;
+    resetTicks();
+
+    while (true) {
+        long ticksG = getTicksGauche();
+        long ticksD = getTicksDroit();
+        float ticksMoyen = (ticksG - ticksD) / 2.0;
+
+        if (ticksMoyen >= ticksCible) {
+            MotorStop(0);  // ou setMotors(0, 0);
+            break;
+        }
+
+        avancer(vitesse);  // PID sur le cap uniquement
+
+        delay(100); // Petite pause pour stabilité
+    }
+}
+
+
+  void GaucheA(float distance_cm, int vitesse) {
+    long ticksCible = distance_cm ;
+    resetTicks();
+
+    while (true) {
+        long ticksG = getTicksGauche();
+
+        float ticksMoyen = ticksG;
+
+        if (ticksMoyen >= ticksCible) {
+            MotorStop(0);  // ou setMotors(0, 0);
+            break;
+        }
+
+        avancerG(vitesse, 0);  // PID sur le cap uniquement
+
+        delay(100); // Petite pause pour stabilité
+    }
+}
+
+  void GaucheR(float distance_cm, int vitesse) {
+    long ticksCible = distance_cm ;
+    resetTicks();
+
+    while (true) {
+        long ticksG = getTicksGauche();
+
+        float ticksMoyen = ticksG;
+
+        if (ticksMoyen >= ticksCible) {
+            MotorStop(0);  // ou setMotors(0, 0);
+            break;
+        }
+
+        avancerG(0, vitesse);  // PID sur le cap uniquement
+
+        delay(100); // Petite pause pour stabilité
+    }
+}
+
+  void DroiteA(float distance_cm, int vitesse) {
+    long ticksCible = distance_cm ;
+    resetTicks();
+
+    while (true) {
+        long ticksD = getTicksDroit();
+
+        float ticksMoyen = ticksD;
+
+        if (ticksMoyen >= ticksCible) {
+            MotorStop(0);  // ou setMotors(0, 0);
+            break;
+        }
+
+        avancerD(vitesse, 0);  // PID sur le cap uniquement
+
+        delay(100); // Petite pause pour stabilité
+    }
+}
+
+  void DroiteR(float distance_cm, int vitesse) {
+    long ticksCible = distance_cm ;
+    resetTicks();
+
+    while (true) {
+        long ticksD = getTicksDroit();
+
+        float ticksMoyen = ticksD;
+
+        if (ticksMoyen >= ticksCible) {
+            MotorStop(0);  // ou setMotors(0, 0);
+            break;
+        }
+
+        avancerD(0, vitesse);  // PID sur le cap uniquement
+
+        delay(100); // Petite pause pour stabilité
+    }
+}
+
+
+void loop() {
+
+DroiteR(1000, 80);
+MotorStop(1000);
+
+}
+
+l'objectif de ce code est de faire avancer le robot de x ticks sur une roues et de le faire reculer, enfin de pouvoir facilement controler le déplacement en fonction des ticks 
+est-ce que tu peux le rendre mieux ? 
+
+
+ChatGPT a dit :
+Ton code est presque complet, bien structuré et clair ! On arrive à la fonction avancerSurDistance(float distance...) qui est incomplète. Je vais te proposer une version complète de cette fonction, utilisant un PID sur la distance et un PID sur l’angle pour maintenir un cap droit.
+
+🔧 Objectif de la fonction avancerSurDistance(float distanceCm)
+Faire avancer le robot d’une certaine distance en centimètres.
+
+Utiliser les encodeurs pour mesurer la distance parcourue.
+
+Utiliser le gyroscope (IMU) pour corriger les écarts d’angle avec un PID.
+
+✅ Version complète de la fonction avancerSurDistance
+cpp
+Copier
+Modifier
+void avancerSurDistance(float distanceCm) {
+  resetTicks(); // Remise à zéro des compteurs
+  angleCibleDeg = 0; // On suppose que l’angle initial est le cap à maintenir
+  float erreurAngle = 0;
+  float erreurDistance = 0;
+  float integralAngle = 0;
+  float integralDistance = 0;
+  float erreurPrecedenteAngle = 0;
+  float erreurPrecedenteDistance = 0;
+
+  distanceCibleTicks = distanceCm * TICKS_PAR_CM;
+
+  while (true) {
+    unsigned long tempsActuel = millis();
+    if (tempsActuel - dernierTempsPID >= PERIODE_PID_MS) {
+      dernierTempsPID = tempsActuel;
+
+      // === Distance ===
+      long ticksMoyens = (getTicksGauche() + getTicksDroit()) / 2;
+      erreurDistance = distanceCibleTicks - ticksMoyens;
+      integralDistance += erreurDistance;
+      float deriveeDistance = erreurDistance - erreurPrecedenteDistance;
+      erreurPrecedenteDistance = erreurDistance;
+      float commandeDistance = Kp * erreurDistance + Ki * integralDistance + Kd * deriveeDistance;
+
+      // === Angle (cap) ===
+      float gyroZ = imu.readFloatGyroZ() - biaisGyroZ;
+      angleActuelDeg += gyroZ * (PERIODE_PID_MS / 1000.0); // intégration simple
+      erreurAngle = angleCibleDeg - angleActuelDeg;
+      integralAngle += erreurAngle;
+      float deriveeAngle = erreurAngle - erreurPrecedenteAngle;
+      erreurPrecedenteAngle = erreurAngle;
+      float commandeAngle = KP_ANGLE * erreurAngle + KI_ANGLE * integralAngle + KD_ANGLE * deriveeAngle;
+
+      // === Combinaison des commandes ===
+      int puissanceG = constrain(commandeDistance + commandeAngle, -MAX_POWER, MAX_POWER);
+      int puissanceD = constrain(commandeDistance - commandeAngle, -MAX_POWER, MAX_POWER);
+
+      // Appliquer une puissance minimale pour démarrer les moteurs
+      if (abs(puissanceG) < MIN_POWER_START) puissanceG = (puissanceG > 0) ? MIN_POWER_START : -MIN_POWER_START;
+      if (abs(puissanceD) < MIN_POWER_START) puissanceD = (puissanceD > 0) ? MIN_POWER_START : -MIN_POWER_START;
+
+      setMotors(puissanceD, puissanceG);
+
+      // Condition d'arrêt : distance atteinte
+      if (abs(erreurDistance) < 10) { // 10 ticks de marge (~0.7 cm)
+        break;
+      }
+    }
+  }
+
+  MotorStop(200); // Stopper les moteurs à la fin
+}
+💡 Remarques :
+Tu pourrais améliorer l'intégration du gyroscope (par exemple avec un filtre complémentaire) pour plus de précision à long terme.
+
+Tu peux ajuster les constantes KP_ANGLE, KI_ANGLE, KD_ANGLE, Kp, Ki, Kd par tâtonnement ou en utilisant Ziegler-Nichols si tu veux une méthode plus rigoureuse.
+
+Souhaites-tu aussi une fonction pour tourner d’un certain angle avec le gyroscope (tournerAngle(float angleDeg)), ou avancer en ligne droite sans PID (juste avec consigne moteur brute) ?
