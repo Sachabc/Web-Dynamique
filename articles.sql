@@ -20,15 +20,15 @@ CREATE TABLE `articles` (
 -- Structure de la table `articles`
 --
 
+
+--
+-- Structure de la table `articles`
+--
+
 CREATE TABLE `articles` (
   `id` int NOT NULL,
   `nom` varchar(255) NOT NULL,
-  `type_vente` enum('meilleure offre','transaction clie
-
-INSERT INTO `articles` (`id`, `nom`, `type_vente`, `prix`, `image`, `stock`, `description`, `categorie`, `ventes`, `online`, `date_achat`) VALUES
-(1, 'brosse toilette pistolet', 'meilleure offre', 39.99, 'brosse_toilette_pistolet.jpg', 5, 'Transforme une corvée en mission badass avec cette brosse toilette en forme de pistolet. Fun, insolite et redoutablement efficace.', 'salle de bain', 950, 1, NULL),
-(2, 'chaussettes cornichons', 'meilleure offre', 14.99, 'chaussettes cornichons.jpg', 7, 'Chaussettes cornichons pour ceux qui osent l’originalité jusqu’au bout des pieds. Un style piquant et unique.', 'mode', 800, 1, NULL),
-(3, 'coussin avocat géant', 'meilleure offre', 45.00, 'coussin_avocat_géant.jpg', 3, 'Un coussin avocat géant moelleux à souhait. Parfait pour chiller avec classe et croquer la vie à pleines dents.', 'décoration', 700, 1, NULL),
+  `type_vente` enum('meilleure offre','transaction clie moelleux à souhait. Parfait pour chiller avec classe et croquer la vie à pleines dents.', 'décoration', 700, 1, NULL),
 (4, 'gomme géante chat', 'meilleure offre', 25.50, 'gomme geante chat.jpg', 4, 'La gomme géante chat, l’alliée mignonne et pratique pour effacer tes erreurs avec douceur et style.', 'fournitures scolaires', 150, 1, NULL),
 (5, 'paillassons tacos', 'meilleure offre', 28.00, 'paillassons tacos.jpg', 6, 'Un paillasson tacos qui dit clairement : \"Ici on a du goût\". Donne faim dès le seuil de la porte.', 'décoration', 120, 1, NULL),
 (6, 'tee shirt licorne', 'meilleure offre', 32.99, 'tee shirt licorne.jpg', 5, 'Un tee-shirt licorne pour briller sans complexe. Magique, coloré, et carrément stylé.', 'mode', 900, 1, NULL),
