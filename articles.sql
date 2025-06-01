@@ -15,17 +15,15 @@ CREATE TABLE `articles` (
   `type_vente` enum('meilleure offre','transaction client vendeur','achat immediat') NOT NULL,
   `prix` decimal(10,2) NOT NULL,
   `image` varchar(255) NOT NULL,
-  `stock` int NOT NULL,
-  `description` text,
-  `categorie` varchar(100) DEFAULT NULL,
-  `ventes` int DEFAULT '0',
-  `online` int DEFAULT '0',
-  `date_achat` date DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 --
--- Déchargement des données de la table `articles`
+-- Structure de la table `articles`
 --
+
+CREATE TABLE `articles` (
+  `id` int NOT NULL,
+  `nom` varchar(255) NOT NULL,
+  `type_vente` enum('meilleure offre','transaction clie
 
 INSERT INTO `articles` (`id`, `nom`, `type_vente`, `prix`, `image`, `stock`, `description`, `categorie`, `ventes`, `online`, `date_achat`) VALUES
 (1, 'brosse toilette pistolet', 'meilleure offre', 39.99, 'brosse_toilette_pistolet.jpg', 5, 'Transforme une corvée en mission badass avec cette brosse toilette en forme de pistolet. Fun, insolite et redoutablement efficace.', 'salle de bain', 950, 1, NULL),
